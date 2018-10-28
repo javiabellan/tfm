@@ -1,3 +1,54 @@
+"""
+TODO
+
+1. precompute=True
+2. Use lr_find() to find highest learning rate where loss is still clearly improving
+3. Train last layer from precomputed activations for 1-2 epochs
+4. Train last layer with data augmentation (i.e. precompute=False) for 2-3 epochs with cycle_len=1
+5. Unfreeze all layers
+6. Set earlier layers to 3x-10x lower learning rate than next higher layer
+7. Use lr_find() again
+8. Train full network with cycle_mult=2 until over-fitting
+
+
+
+
+
+AUGMENTATIONS
+
+De posicion (dihedral)
+	1. Horizontal Flip
+	2. Vertical Flip    
+	3. 90 Rotation
+Position
+	4. Scale
+	5. Crop
+	6. Translation
+	7. Small rotation
+Filter
+	brightness
+	contrast
+	Gaussian Noise
+To feed the net
+	Normalizar
+	Totensor
+"""
+transforms.RandomHorizontalFlip
+transforms.RandomVerticalFlip
+
+transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.Scale(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            ts.transforms.Rotate(20), # data augmentation: rotation 
+            ts.transforms.Rotate(-20), # data augmentation: rotation
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+
+#################################################
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -50,6 +101,7 @@ verbose         = args.v
 
 csv_file = pathlib.Path("C:/Users/Javi/Desktop/tfm/Datasets/ISIC-2017/ISIC2017_GroundTruth.csv")
 data_dir = pathlib.Path("D:/Datasets/TFM/ISIC-2017_Training_Data")
+
 
 class skinDataset(Dataset):
 
