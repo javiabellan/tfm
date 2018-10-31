@@ -2,6 +2,10 @@
 
 TFM based on this [paper](https://www.hindawi.com/journals/cin/2018/2061516/)
 
+## TODO
+- Use albumentations: because imgaug was too slow and we got 100% CPU utilization, while GPUs were not fully utilized.
+- To speed up jpeg image I/O from the disk one should not use PIL, skimage and even OpenCV but look for libjpeg-turbo or PyVips.
+
 ## Datasets
 
 Datasets of skin lesions and skin cancer.
