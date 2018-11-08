@@ -4,13 +4,13 @@ TFM based on this [paper](https://www.hindawi.com/journals/cin/2018/2061516/)
 
 ### Datasets
 
-- [**ISIC2017**](https://challenge.kitware.com/#phase/5840f53ccad3a51cc66c8dab) Datasets of skin lesions and skin cancer. 2000 images, format: JPG
+- [**ISIC2017**](https://challenge.kitware.com/#phase/5840f53ccad3a51cc66c8dab) Dataset of skin lesions. 3 classes, 2000 images:
   - 374 of **malignant** skin tumors: *Melanoma*
   - 1626 of **benign** skin tumors:
     - 254 of *Seborrheic Keratosis*
     - 1372 of *Nevus*
 
-- [**HIS2828**](http://online.unillanos.edu.co:8084/histologyDS/): Datasets of hystology microscopic images. 4 classes of tissue. 2828 images of 720x480
+- [**HIS2828**](http://online.unillanos.edu.co:8084/histologyDS/): Dataset of hystology images. 4 classes, 2828 images:
   - 1026 nervous tissue images
   - 484 connective tissue images
   - 804 epithelial tissue images
@@ -31,10 +31,10 @@ TFM based on this [paper](https://www.hindawi.com/journals/cin/2018/2061516/)
 
 ### Model
 
-- initial weights
-- dropout, ReLus and batch normalization
+- Initial weights?
+- Dropout, ReLus and batch normalization
 - 45 epochs
-- learning rate
+- Learning rate
   -  To decay the learning rate in each epoch
 
   
