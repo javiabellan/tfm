@@ -1,10 +1,13 @@
+"""
+TODO
+====
+
+- Crear documentacion con https://docs.readthedocs.io
+"""
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim import lr_scheduler
-from torch.utils.data import Dataset, DataLoader
 import torchvision
 from torchvision import transforms
+import albumentations as aug
 
 import numpy as np
 import pandas as pd
@@ -19,52 +22,219 @@ import os
 import copy
 print("AI framework by Javi based in PyTorch:",torch.__version__)
 
-# plt.xkcd();  # commic plots plt.rcdefaults() to disable
 
+
+################  _    _ _   _ _     
+################ | |  | | | (_) |    
+################ | |  | | |_ _| |___ 
+################ | |  | | __| | / __|
+################ | |__| | |_| | \__ \
+################  \____/ \__|_|_|___/
+################
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
+class Timer():
+	def __init__(self):
+		self.times = [time.time()]
+		self.total_time = 0.0
 
-############################################################### VISUALIZATION
-
-######################## SHOW BALANCED PIE
-
-def plot_balance(dataset):
-	balance = dataset.df.groupby(['Label']).count()
-
-	count = balance["Image"].values
-	#label_indexes = balance.index.values
-	labels = [a+": "+str(b) for a, b in zip(dataset.labels, count)]
-
-	plt.pie(count, labels=labels, autopct='%1.1f%%');
+	def __call__(self, include_in_total=True):
+		self.times.append(time.time())
+		dt = self.times[-1] - self.times[-2]
+		if include_in_total:
+			self.total_time += dt
+		return dt
 
 
-######################## SHOW IMAGES
-
-def plot_images(dataset, columns=8, rows=4):
-
-	fig = plt.figure(figsize=(16,6));
-	for i in range(1, columns*rows+1):
-		idx = np.random.randint(len(dataset));
-		img, lbl = dataset[idx]
-
-		fig.add_subplot(rows, columns, i)
-
-		plt.title(dataset.labels_map[lbl])
-		plt.axis('off')
-		plt.imshow(img)
-	plt.show()
+################    _____        _                                                  
+################   |  __ \      | |                                                 
+################   | |  | | __ _| |_ __ _     _ __  _ __ ___ _ __  _ __ ___   ___   
+################   | |  | |/ _` | __/ _` |   | '_ \| '__/ _ \ '_ \| '__/ _ \ / __|  
+################   | |__| | (_| | || (_| |   | |_) | | |  __/ |_) | | | (_) | (__.
+################   |_____/ \__,_|\__\__,_|   | .__/|_|  \___| .__/|_|  \___/ \___(_)
+################                             | |            | |                     
+################                             |_|            |_|                     
 
 
+def normalise(x, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)):
+    x, mean, std = [np.array(a, np.float32) for a in (x, mean, std)]
+    x -= mean*255
+    x *= 1.0/(255*std)
+    return x
+
+def padding(x, border=4):
+    return np.pad(x, [(0, 0), (border, border), (border, border), (0, 0)], mode='reflect')
+
+def transpose(x, source='NHWC', target='NCHW'):
+    return x.transpose([source.index(d) for d in target]) 
+
+
+
+################                                             _        _   _             
+################       /\                                   | |      | | (_)            
+################      /  \  _   _  __ _ _ __ ___   ___ _ __ | |_ __ _| |_ _  ___  _ __  
+################     / /\ \| | | |/ _` | '_ ` _ \ / _ \ '_ \| __/ _` | __| |/ _ \| '_ \ 
+################    / ____ \ |_| | (_| | | | | | |  __/ | | | || (_| | |_| | (_) | | | |
+################   /_/    \_\__,_|\__, |_| |_| |_|\___|_| |_|\__\__,_|\__|_|\___/|_| |_|
+################                   __/ |                                                
+################                  |___/                                                 
+################
+################  Augmentations provided by albumentations
+################  https://github.com/albu/albumentations/blob/master/albumentations/augmentations/transforms.py
+
+"""
+
+########## Por clasificar
+
+'PadIfNeeded',        # Pad side of the image / max if side is less than desired number.
+'Cutout',             # CoarseDropout of the square regions in the image.
+'ToFloat',            # Divide pixel values by max_value to get a float32 output array where all values lie in the range [0, 1.0]. If max_value is None the transform will try to infer the maximum value by inspecting the data type of the input image.
+'FromFloat',          # Take an input array where all values should lie in the range [0, 1.0], multiply them by max_value and then cast the resulted value to a type specified by dtype. If max_value is None the transform will try to infer the maximum value for the data type from the dtype argument.
+'LongestMaxSize',     # Rescale an image so that maximum side is equal to max_size, keeping the aspect ratio of the initial image.
+'SmallestMaxSize',    # Rescale an image so that minimum side is equal to max_size, keeping the aspect ratio of the initial image.
+
+########## Filter augmentations
+
+'Normalize',          # Divide pixel values by 255 = 2**8 - 1, subtract mean per channel and divide by std per channel.
+'RGBShift',           # Randomly shift values for each channel of the input RGB image.
+'InvertImg',          # Invert the input image by subtracting pixel values from 255.
+'HueSaturationValue', # Randomly change hue, saturation and value of the input image.
+'ChannelShuffle',     # Randomly rearrange channels of the input RGB image.
+'CLAHE',              # Apply Contrast Limited Adaptive Histogram Equalization to the input image.
+'RandomContrast',
+'RandomGamma',
+'RandomBrightness',
+'Blur',               # Blur the input image using a random-sized kernel.
+'MedianBlur',         # Blur the input image using using a median filter with a random aperture linear size.
+'MotionBlur',         # Apply motion blur to the input image using a random-sized kernel.
+'GaussNoise',         # Apply gaussian noise to the input image.
+'ToGray',             # Convert the input RGB image to grayscale. If the mean pixel value for the resulting image is greater than 127, invert the resulting grayscale image.
+'JpegCompression',    # Decrease Jpeg compression of an image.
+
+########## Move augmentations (View position zoom rotation)
+
+'VerticalFlip',      # Flip the input vertically around the x-axis.
+'HorizontalFlip',    # Flip the input horizontally around the y-axis.
+'Flip',              # Flip the input either horizontally, vertically or both horizontally and vertically.
+'RandomRotate90',    # Randomly rotate the input by 90 degrees zero or more times.
+'Transpose',         # Transpose the input by swapping rows and columns.
+'ShiftScaleRotate',  # Randomly apply affine transforms: translate, scale and rotate the input.
+'RandomSizedCrop'    # Crop a random part of the input and rescale it to some size.
+'RandomCrop',        # Crop a random part of the input.
+'Rotate',            # Rotate the input by an angle selected randomly from the uniform distribution.
+'CenterCrop',        # Crop the central part of the input.
+'Crop',              # Crop region from image.
+'RandomScale',       # Randomly resize the input. Output image size is different from the input image size.
+'Resize',            # Resize the input to the given height and width.
+
+########## Distorsion augmentations
+
+'GridDistortion',
+'ElasticTransform',
+'OpticalDistortion',
+
+
+
+Blur(blur_limit=7, p=0.5)  
+
+VerticalFlip(p=0.5)        
+HorizontalFlip(p=0.5)      
+Flip(p=0.5)                
+Transpose(p=0.5)           
+
+
+RandomCrop(height, width, p=1.0)      
+RandomGamma(gamma_limit=(80, 120), p=0.5)
+RandomRotate90(p=0.5)      
+Normalize(mean=(0.485, 0.456, 0.406), 
+	      std=(0.229, 0.224, 0.225),
+	      max_pixel_value=255.0, p=1.0)
+
+
+
+###############################
+
+# Aerial and medicine image
+aug.Flip(p=0.5)
+aug.RandomRotate90(p=0.5)
+
+
+# Picture image
+aug.HorizontalFlip(p=0.5)
+
+
+def augment_flips_color(p=.5):
+	return aug.Compose([
+		aug.CLAHE(),          # Apply Contrast Limited Adaptive Histogram Equalization to the input image.
+		aug.RandomRotate90(),
+		aug.Transpose(),
+		aug.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.50, rotate_limit=45, p=.75),
+		aug.Blur(blur_limit=3),
+		aug.OpticalDistortion(),
+		aug.GridDistortion(),
+		aug.HueSaturationValue()
+	], p=p)
+
+sampleAug = aug.OneOf([
+	aug.CLAHE(clip_limit=2),
+	aug.IAASharpen(),
+	aug.RandomRotate90(),
+	aug.IAAEmboss(),
+	aug.Transpose(),
+	aug.RandomContrast(),
+	aug.RandomBrightness(),
+], p=0.3)
+"""
+
+################    _____        _                 _   
+################   |  __ \      | |               | |  
+################   | |  | | __ _| |_ __ _ ___  ___| |_ 
+################   | |  | |/ _` | __/ _` / __|/ _ \ __|
+################   | |__| | (_| | || (_| \__ \  __/ |_ 
+################   |_____/ \__,_|\__\__,_|___/\___|\__|
+################
+
+
+
+def get_subsets(dataset, percentage=0.7):
+	length = len(dataset)
+	train_length = int(percentage * length)
+	valid_length = length - train_length
+	train, valid = torch.utils.data.random_split(dataset, lengths=[train_length, valid_length])
+
+	return train, valid
+
+
+def get_images_sizes(dataset):
+	sizes = {}
+	for i in range(len(dataset)):
+		img_name = dataset.data_dir / (dataset.df.iloc[idx, 0])
+		image    = PIL.Image.open(img_name)
+		size     = image.size
+
+		if size in sizes: sizes[size] += 1
+		else:             sizes[size] = 1
+
+	return sizes
 
 
 
 
-################################################################### MODEL
 
 
-################################### FREEZING
+################    __  __           _      _ 
+################   |  \/  |         | |    | |
+################   | \  / | ___   __| | ___| |
+################   | |\/| |/ _ \ / _` |/ _ \ |
+################   | |  | | (_) | (_| |  __/ |
+################   |_|  |_|\___/ \__,_|\___|_|
+################                              
+                            
+
+
+################################    FREEZING
 
 # Finetune the last layer
 def freeze(model):
@@ -115,24 +285,45 @@ def load_checkpoint(model, filename='checkpoint.pth.tar'):
 
 
 
-################################### LAYERS
+################    _                               
+################   | |                              
+################   | |     __ _ _   _  ___ _ __ ___ 
+################   | |    / _` | | | |/ _ \ '__/ __|
+################   | |___| (_| | |_| |  __/ |  \__ \
+################   |______\__,_|\__, |\___|_|  |___/
+################                 __/ |              
+################                |___/               
 
-class Flatten(nn.Module):
-	def forward(self, input):
-		return input.view(input.size(0), -1)
+class Flatten(torch.nn.Module):
+	def forward(self, x):
+		return x.view(x.size(0), -1)
 
-class AdaptiveConcatPool2d(nn.Module):
+class Concat(torch.nn.Module):
+	def forward(self, *xs):
+		return torch.cat(xs, 1)
+
+class AdaptiveConcatPool2d(torch.nn.Module):
 	def __init__(self, sz=None):
 		super().__init__()
 		sz = sz or (1,1)
-		self.ap = nn.AdaptiveAvgPool2d(sz)
-		self.mp = nn.AdaptiveMaxPool2d(sz)
+		self.ap = torch.nn.AdaptiveAvgPool2d(sz)
+		self.mp = torch.nn.AdaptiveMaxPool2d(sz)
 	def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
 
 
 
 
-################################################################### LR FINDER
+
+
+
+################    _      _____    ______ _           _           
+################   | |    |  __ \  |  ____(_)         | |          
+################   | |    | |__) | | |__   _ _ __   __| | ___ _ __ 
+################   | |    |  _  /  |  __| | | '_ \ / _` |/ _ \ '__|
+################   | |____| | \ \  | |    | | | | | (_| |  __/ |   
+################   |______|_|  \_\ |_|    |_|_| |_|\__,_|\___|_|   
+################                                                   
+                                                 
 """
 The learning rate finder looks for the optimal learning rate to start the training.
 The technique is quite simple. For one epoch:
@@ -146,14 +337,6 @@ A graph is created with the x axis having learning rates and the y axis having t
 https://medium.com/coinmonks/training-neural-networks-upto-10x-faster-3246d84caacd
 https://github.com/nachiket273/One_Cycle_Policy/blob/master/CLR.ipynb
 """
-
-def update_lr(optimizer, lr):
-	for g in optimizer.param_groups:
-		g['lr'] = lr
-
-def update_mom(optimizer, mom):
-	for g in optimizer.param_groups:
-		g['momentum'] = mom
 
 def findLR(model, optimizer, criterion, trainloader, init_value=1e-5, final_value=100):
 
@@ -213,6 +396,321 @@ def findLR(model, optimizer, criterion, trainloader, init_value=1e-5, final_valu
 
 
 
+
+
+
+################    _______        _       
+################   |__   __|      (_)      
+################      | |_ __ __ _ _ _ __  
+################      | | '__/ _` | | '_ \ 
+################      | | | | (_| | | | | |
+################      |_|_|  \__,_|_|_| |_|
+################  
+
+############################################################### TRAIN OLD
+
+
+
+def get_optimizer(model, lr=0.0, momentum=0.9, weight_decay=0, nesterov=False):
+	params = filter(lambda p: p.requires_grad, model.parameters())
+	return torch.optim.SGD(params=params, lr=lr, momentum=momentum, weight_decay=weight_decay, nesterov=nesterov)
+	#return torch.optim.Adam(params_to_update, lr=learning_rate);
+
+metrics = { 'train': {'loss' : [], 'acc': [0]},
+			'val':   {'loss' : [], 'acc': [0]}}
+
+def train_old(model, optimizer, criterion, dataset, batch_size, num_epochs, num_workers=0, half=True):
+
+	dataloader = {x: torch.utils.data.DataLoader(dataset[x], batch_size=batch_size, shuffle=True, num_workers=num_workers) for x in ['train', 'val']}
+	dataset_sizes = {x: len(dataset[x]) for x in ['train', 'val']}
+
+	# Decay LR by a factor of 0.1 every 7 epochs
+	scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+
+	since = time.time()
+	best_acc = 0.0
+	#best_model_wts = copy.deepcopy(model.state_dict())
+
+	mb  = master_bar(range(num_epochs))
+	mb.names = ['train', 'val']
+	mb.write("Epoch\tTrn_loss\tVal_loss\tTrn_acc\t\tVal_acc")
+	# Iterate epochs
+	#for epoch in range(num_epochs):
+	for epoch in mb:
+
+		# Each epoch has a training and validation phase
+		for phase in ['train', 'val']:
+			if phase == 'train':
+				scheduler.step() # Scheduling the learning rate
+				model.train()    # Set model to training mode
+			else:
+				model.eval()     # Set model to evaluate mode
+
+			running_loss     = 0.0
+			running_corrects = 0
+
+			# Iterate over data
+			#for inputs, labels in dataloader[phase]:
+			for inputs, labels in progress_bar(dataloader[phase], parent=mb):
+				inputs = inputs.to(device)
+				labels = labels.to(device)
+				if half: inputs = inputs.half()
+
+				optimizer.zero_grad()			      # zero the parameter gradients
+				outputs = model(inputs)                # forward
+				preds = torch.argmax(outputs, dim=1)   # prediction
+				loss = criterion(outputs, labels)      # loss
+				if phase == 'train': loss.backward()   # backward 
+				if phase == 'train': optimizer.step()  # optimize
+
+				# statistics
+				running_loss     += loss.item() * inputs.size(0)    # multiplicar si nn.CrossEntropyLoss(size_average=True) que es lo default
+				running_corrects += torch.sum(preds == labels.data)
+
+			epoch_loss = running_loss / dataset_sizes[phase]
+			epoch_acc  = running_corrects.double() / dataset_sizes[phase]
+			metrics[phase]["loss"].append(epoch_loss)
+			metrics[phase]["acc"].append(epoch_acc)
+			#draw_plot(metrics)
+
+			# deep copy the model
+			if phase == 'val' and epoch_acc > best_acc:
+				best_acc = epoch_acc
+				#best_model_wts = copy.deepcopy(model.state_dict())
+
+		x = list(range(len(metrics["train"]["acc"])))
+		graphs = [[x,metrics["train"]["acc"]], [x,metrics["val"]["acc"]]]
+		mb.update_graph(graphs)
+		mb.write("{}/{}\t{:06.6f}\t{:06.6f}\t{:06.6f}\t{:06.6f}".format(epoch+1, num_epochs,
+			metrics["train"]["loss"][-1], metrics["val"]["loss"][-1],
+			metrics["train"]["acc"][-1],  metrics["val"]["acc"][-1]))
+
+	time_elapsed = time.time() - since
+	print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed//60, time_elapsed%60))
+	print('Best val Acc: {:4f}'.format(best_acc))
+
+	# load best model weights
+	#model.load_state_dict(best_model_wts)
+
+
+
+
+############################################################### TRAIN NEW
+
+class LinearInterpolation():
+	def __init__(self, xs, ys):
+		self.xs, self.ys = xs, ys
+	def __call__(self, x):
+		return np.interp(x, self.xs, self.ys)
+
+def update_lr(optimizer, lr):
+	optimizer.param_groups[0]['lr'] = lr
+
+def update_mom(optimizer, mom):
+	optimizer.param_groups[0]['momentum'] = mom
+
+	
+def forward(model, batch, criterion, stats):
+	inputs   = batch[0].to(device).half()
+	labels   = batch[1].to(device).long()
+	outputs  = model(inputs)
+	preds    = torch.argmax(outputs, dim=1)
+	corrects = torch.sum(preds == labels.data) # Metric 1
+	loss     = criterion(outputs, labels)      # Metric 2
+
+	stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
+	stats["correct"].append(corrects.item())
+
+	return loss
+
+def backward(model, optimizer, lr, loss):
+	assert model.training
+	update_lr(optimizer, lr)
+	loss.backward()
+	optimizer.step()
+	model.zero_grad()
+
+def train_epoch(mb, model, batches, optimizer, criterion, lrs, stats):
+	model.train(True)
+	for lr, batch in zip(lrs, progress_bar(batches, parent=mb)):
+		loss = forward(model, batch, criterion, stats)
+		backward(model, optimizer, lr, loss)
+	return stats
+
+def test_epoch(mb, model, batches, criterion, stats):
+	model.train(False)
+	for batch in progress_bar(batches, parent=mb):
+		loss = forward(model, batch, criterion, stats)
+	return stats
+
+
+metric = {
+	"epoch": [],
+	"learning rate": [],
+	"total time": [],
+	"train loss": [],
+	"train acc": [],
+	"val loss": [],
+	"val acc": []
+}
+
+def train(model, epochs, learning_rates, optimizer, criterion, dataset, batch_size=512, num_workers=0, drop_last=False, timer=None):
+	
+	t = timer or Timer()
+	if balance: train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=False, pin_memory=True, num_workers=num_workers, drop_last=drop_last, sampler=balanced_sampler)
+	else:       train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=True,  pin_memory=True, num_workers=num_workers, drop_last=drop_last)
+	test_batches              = torch.utils.data.DataLoader(dataset["val"],   batch_size, shuffle=False, pin_memory=True, num_workers=num_workers)
+	train_size, val_size = len(dataset["train"]), len(dataset["val"])
+	if drop_last: train_size -= (train_size % batch_size)
+
+	num_epochs    = epochs[-1]
+	lr_schedule   = LinearInterpolation(epochs, learning_rates)
+	#mo_schedule   = LinearInterpolation(epochs, momentum)
+
+	mb = master_bar(range(num_epochs))
+	mb.write("Epoch\tTime\tLearRate\tT_loss\tT_accu\t\tV_loss\tV_accu")
+	mb.write("-"*70)
+	for epoch in mb:
+
+		#train_batches.dataset.set_random_choices() 
+		lrs = (lr_schedule(x)/batch_size for x in np.arange(epoch, epoch+1, 1/len(train_batches)))
+		train_stats, train_time = train_epoch(mb, model, train_batches, optimizer, criterion, lrs, {'loss': [], 'correct': []}), t()
+		test_stats, test_time   = test_epoch(mb, model, test_batches, criterion, {'loss': [], 'correct': []}), t()
+		
+		metric["epoch"].append(epoch+1)
+		metric["learning rate"].append(lr_schedule(epoch+1))
+		metric["total time"].append(t.total_time)
+		metric["train loss"].append(sum(train_stats['loss'])/train_size)
+		metric["train acc"].append(sum(train_stats['correct'])/train_size)
+		metric["val loss"].append(sum(test_stats['loss'])/val_size)
+		metric["val acc"].append(sum(test_stats['correct'])/val_size)
+
+		mb.write("{}/{}\t{:.0f}:{:.0f}\t{:.4f}\t\t{:.4f}\t{:.4f}\t\t{:.4f}\t{:.4f}".format(
+			metric["epoch"][-1],
+			num_epochs,
+			metric["total time"][-1]//60,
+			metric["total time"][-1]%60,
+			metric["learning rate"][-1],
+			metric["train loss"][-1],
+			metric["train acc"][-1],
+			metric["val loss"][-1],
+			metric["val acc"][-1]
+		))
+		graphs = [[metric["epoch"], metric["train acc"]],
+		          [metric["epoch"], metric["val acc"]]]
+		mb.update_graph(graphs)
+
+	return metric
+
+
+
+
+
+
+
+
+
+
+
+
+################   __      ___                 _ _          _   _             
+################   \ \    / (_)               | (_)        | | (_)            
+################    \ \  / / _ ___ _   _  __ _| |_ ______ _| |_ _  ___  _ __  
+################     \ \/ / | / __| | | |/ _` | | |_  / _` | __| |/ _ \| '_ \ 
+################      \  /  | \__ \ |_| | (_| | | |/ / (_| | |_| | (_) | | | |
+################       \/   |_|___/\__,_|\__,_|_|_/___\__,_|\__|_|\___/|_| |_|
+################                                                              
+                                                            
+
+# plt.xkcd();  # commic plots plt.rcdefaults() to disable
+
+
+# SHOW BALANCED PIE
+def plot_balance(dataset):
+	balance = dataset.df.groupby(['Label']).count()
+
+	count = balance["Image"].values
+	#label_indexes = balance.index.values
+	labels = [a+": "+str(b) for a, b in zip(dataset.labels, count)]
+
+	plt.pie(count, labels=labels, autopct='%1.1f%%');
+
+	return count
+
+# SHOW IMAGES
+def plot_images(dataset, columns=8, rows=4):
+
+	fig = plt.figure(figsize=(16,6));
+	for i in range(1, columns*rows+1):
+		idx = np.random.randint(len(dataset));
+		img, lbl = dataset[idx]
+
+		fig.add_subplot(rows, columns, i)
+
+		plt.title(dataset.labels_map[lbl])
+		plt.axis('off')
+		plt.imshow(img)
+	plt.show()
+
+
+"""
+Plot linear one-cycle lr in the format
+epochs         = [0, 15, 30, 35]
+learning_rates = [0, 0.1, 0.005, 0]
+"""
+def plot_lr(epochs, lrs):
+    plt.title("Learning Rate")
+    plt.xlabel("Epochs")
+    plt.ylabel("Learning Rate")
+    plt.plot(epochs, lrs)
+
+
+
+def plot_bottleneck(model, criterion, optimizer, dataloader, batch_size=64):
+	t = Timer()
+
+	batch = next(iter(dataloader))
+	time_data = t()
+
+	inputs   = batch[0].to(device).half()
+	labels   = batch[1].to(device).long()
+	time_gpu = t()
+	outputs, time_forward   = model(inputs), t()
+	preds, time_preds       = torch.argmax(outputs, dim=1), t()
+	corrects, time_corrects = torch.sum(preds == labels.data), t()
+	loss, time_loss         = criterion(outputs, labels) , t()
+
+	update_lr(optimizer, 0.001)
+	loss.backward()
+	optimizer.step()
+	model.zero_grad()
+	time_backward = t()
+
+
+	labels = ['read data', 'to gpu', 'forward', 'preds', 'corrects', 'loss', 'backward']
+	times  = [time_data, time_gpu, time_forward, time_preds, time_corrects, time_loss, time_backward]
+	y_pos = np.arange(len(times))
+
+	plt.rcParams["figure.figsize"] = (16,4)
+	plt.barh(y_pos, times)
+	plt.yticks(np.arange(len(labels)), labels)
+
+
+def plot_dataset_bottleneck(dataset, idx):
+	t = Timer()
+	img_name, find_img_time = dataset.data_dir / (dataset.df.iloc[idx, 0])  , t()
+	image   , open_img_time = PIL.Image.open(img_name)                      , t()
+	image   , transforms_time = dataset.data_transforms[dataset.subset](image), t()
+	label   , find_lbl_time = dataset.df.iloc[idx, 1] - 1                   , t()
+
+	labels = ["find_img_time", "open_img_time", "transforms", "find_lbl_time"]
+	times  = [find_img_time,    open_img_time, transforms_time,   find_lbl_time]
+	y_pos = np.arange(len(times))
+	plt.rcParams["figure.figsize"] = (16,4)
+	plt.barh(y_pos, times)
+	plt.yticks(np.arange(len(labels)), labels)
+    
+
 """
 Live plot inspired from https://github.com/stared/livelossplot
 """
@@ -245,7 +743,9 @@ def plot_train(metrics):
 
 
 
-def plot_confusion():
+def plot_confusion(model, dataset):
+
+	classes = dataset.labels
 
 	batch   = next(iter(dataloader))
 	images = batch['image'].to(device)
