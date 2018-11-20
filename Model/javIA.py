@@ -113,13 +113,16 @@ def transpose(x, source='NHWC', target='NCHW'):
 'ToGray',             # Convert the input RGB image to grayscale. If the mean pixel value for the resulting image is greater than 127, invert the resulting grayscale image.
 'JpegCompression',    # Decrease Jpeg compression of an image.
 
-########## Move augmentations (View position zoom rotation)
+########## Non destructive augmentations (Dehidral group D4)
 
 'VerticalFlip',      # Flip the input vertically around the x-axis.
 'HorizontalFlip',    # Flip the input horizontally around the y-axis.
 'Flip',              # Flip the input either horizontally, vertically or both horizontally and vertically.
 'RandomRotate90',    # Randomly rotate the input by 90 degrees zero or more times.
 'Transpose',         # Transpose the input by swapping rows and columns.
+
+########## Move augmentations (View position zoom rotation)
+
 'ShiftScaleRotate',  # Randomly apply affine transforms: translate, scale and rotate the input.
 'RandomSizedCrop'    # Crop a random part of the input and rescale it to some size.
 'RandomCrop',        # Crop a random part of the input.
@@ -129,7 +132,7 @@ def transpose(x, source='NHWC', target='NCHW'):
 'RandomScale',       # Randomly resize the input. Output image size is different from the input image size.
 'Resize',            # Resize the input to the given height and width.
 
-########## Distorsion augmentations
+########## Non-rigid transformations augmentations
 
 'GridDistortion',
 'ElasticTransform',
@@ -197,27 +200,130 @@ sampleAug = aug.OneOf([
 ################
 
 
+class ImageDataset(torch.utils.data.Dataset):
 
-def get_subsets(dataset, percentage=0.7):
-	length = len(dataset)
-	train_length = int(percentage * length)
-	valid_length = length - train_length
-	train, valid = torch.utils.data.random_split(dataset, lengths=[train_length, valid_length])
+	def __init__(self, image_dir, images, labels, labels_map, transforms=False, limit=False):
+		self.image_dir  = image_dir        
+		self.images     = images
+		self.labels     = labels
+		self.labels_map = labels_map
+		self.transforms = transforms
+		self.limit      = limit  
 
-	return train, valid
+	def __len__(self):
+		return len(self.labels) if not self.limit else self.limit
+
+	def __getitem__(self, idx):
+		img_name = self.image_dir / self.images[idx]
+		image = PIL.Image.open(img_name)
+		if self.transforms: image = self.transforms(image)
+		label = self.labels[idx]
+		return image, label
+    
+    def get_dataloader(self, batch_size=1, balance=False, shuffle=False, num_workers=0, pin_memory=True, drop_last=False):
+		
+		if balance:
+			sampler = self.get_balanced_sampler()
+			shuffle = False
+		else:
+			sampler = None
+			
+		return torch.utils.data.DataLoader(dataset     = self,
+		                                   batch_size  = batch_size,
+		                                   shuffle     = shuffle,
+		                                   sampler     = sampler,
+		                                   num_workers = num_workers,
+		                                   pin_memory  = pin_memory,
+		                                   drop_last   = drop_last)
+
+	def get_balanced_sampler(self):
+		class_counts  = np.bincount(self.labels)
+		class_weights = sum(class_counts)/class_counts
+		class_weights2 = 1/class_counts
+
+		sample_weights = []
+		for idx in range(self.__len__()):
+			label = self.labels[idx]
+			sample_weights.append(class_weights[label])
+
+		sample_weights = np.array(sample_weights, dtype='float')
+		sampler = torch.utils.data.WeightedRandomSampler(sample_weights, len(sample_weights))
+		return sampler
+
+	def plot_balance(self, ax=None, title=None):
+		ax = ax or plt.gca()
+		unique_labels, counts_labels = np.unique(self.labels, return_counts=True)
+		semantic_labels = [self.labels_map[x]+": "+str(y) for x,y in zip(unique_labels, counts_labels)]
+		if title: ax.set_title(title)
+		ax.pie(counts_labels, labels=semantic_labels, autopct='%1.1f%%');
+  
+	def plot_images(self, columns=8, rows=4):
+		fig = plt.figure(figsize=(16,6));
+		for i in range(1, columns*rows+1):
+			idx = np.random.randint(self.__len__());
+			img, lbl = self.__getitem__(idx)
+
+			fig.add_subplot(rows, columns, i)
+
+			plt.title(self.labels_map[lbl])
+			plt.axis('off')
+			plt.imshow(img)
+		plt.show()
+
+	def get_subsets(self, percentage=0.7):
+		length = self.__len__()
+		train_length = int(percentage * length)
+		valid_length = length - train_length
+		train, valid = torch.utils.data.random_split(self, lengths=[train_length, valid_length])
+
+		return train, valid
+
+	def get_images_sizes(self):
+		sizes = {}
+		for idx in range(self.__len__()):
+			img, lbl = self.__getitem__(idx)
+			size     = img.size
+
+			if size in sizes: sizes[size] += 1
+			else:             sizes[size] = 1
+
+		return sizes
+
+	def get_min_sizes(self):
+		sizes = self.get_images_sizes()
+		min_w = 10000
+		min_h = 10000
+
+		for s in sizes:
+			if s[0] < min_w: min_w = s[0]
+			if s[1] < min_h: min_h = s[1]
+
+		return {"min_w": min_w, "min_h": min_h}
 
 
-def get_images_sizes(dataset):
-	sizes = {}
-	for i in range(len(dataset)):
-		img_name = dataset.data_dir / (dataset.df.iloc[idx, 0])
-		image    = PIL.Image.open(img_name)
-		size     = image.size
 
-		if size in sizes: sizes[size] += 1
-		else:             sizes[size] = 1
-
-	return sizes
+	def get_mean_and_std(self):
+		r_mean, g_mean, b_mean = 0., 0., 0.
+		r_std,  g_std,  b_std  = 0., 0., 0.
+		length = self.__len__()
+		for idx in tqdm(range(length)):
+			img, lbl = self.__getitem__(idx)
+			img = transforms.ToTensor()(img)
+			img = img.view(3, -1)
+			r_mean += img[0].mean()
+			g_mean += img[1].mean()
+			b_mean += img[2].mean()
+			r_std  += img[0].std()
+			g_std  += img[1].std()
+			b_std  += img[2].std()
+		r_mean /= length
+		g_mean /= length
+		b_mean /= length
+		r_std  /= length
+		g_std  /= length
+		b_std  /= length
+		return {"mean": [r_mean, g_mean, b_mean],
+		        "std":  [r_std,  g_std,  b_std]}
 
 
 
@@ -625,34 +731,6 @@ def train(model, epochs, learning_rates, optimizer, criterion, dataset, batch_si
 # plt.xkcd();  # commic plots plt.rcdefaults() to disable
 
 
-# SHOW BALANCED PIE
-def plot_balance(dataset):
-	balance = dataset.df.groupby(['Label']).count()
-
-	count = balance["Image"].values
-	#label_indexes = balance.index.values
-	labels = [a+": "+str(b) for a, b in zip(dataset.labels, count)]
-
-	plt.pie(count, labels=labels, autopct='%1.1f%%');
-
-	return count
-
-# SHOW IMAGES
-def plot_images(dataset, columns=8, rows=4):
-
-	fig = plt.figure(figsize=(16,6));
-	for i in range(1, columns*rows+1):
-		idx = np.random.randint(len(dataset));
-		img, lbl = dataset[idx]
-
-		fig.add_subplot(rows, columns, i)
-
-		plt.title(dataset.labels_map[lbl])
-		plt.axis('off')
-		plt.imshow(img)
-	plt.show()
-
-
 """
 Plot linear one-cycle lr in the format
 epochs         = [0, 15, 30, 35]
@@ -698,7 +776,7 @@ def plot_bottleneck(model, criterion, optimizer, dataloader, batch_size=64):
 
 def plot_dataset_bottleneck(dataset, idx):
 	t = Timer()
-	img_name, find_img_time = dataset.data_dir / (dataset.df.iloc[idx, 0])  , t()
+	img_name, find_img_time = dataset.imgs_dir / (dataset.df.iloc[idx, 0])  , t()
 	image   , open_img_time = PIL.Image.open(img_name)                      , t()
 	image   , transforms_time = dataset.data_transforms[dataset.subset](image), t()
 	label   , find_lbl_time = dataset.df.iloc[idx, 1] - 1                   , t()
@@ -709,6 +787,7 @@ def plot_dataset_bottleneck(dataset, idx):
 	plt.rcParams["figure.figsize"] = (16,4)
 	plt.barh(y_pos, times)
 	plt.yticks(np.arange(len(labels)), labels)
+	plt.xlim((0,0.1))
     
 
 """
