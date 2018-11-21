@@ -220,14 +220,15 @@ class ImageDataset(torch.utils.data.Dataset):
 		label = self.labels[idx]
 		return image, label
     
-    def get_dataloader(self, batch_size=1, balance=False, shuffle=False, num_workers=0, pin_memory=True, drop_last=False):
+
+	def get_dataloader(self, dataset, batch_size=1, balance=False, shuffle=False, num_workers=0, pin_memory=True, drop_last=False):
 		
 		if balance:
 			sampler = self.get_balanced_sampler()
 			shuffle = False
 		else:
 			sampler = None
-			
+
 		return torch.utils.data.DataLoader(dataset     = self,
 		                                   batch_size  = batch_size,
 		                                   shuffle     = shuffle,
@@ -299,7 +300,6 @@ class ImageDataset(torch.utils.data.Dataset):
 			if s[1] < min_h: min_h = s[1]
 
 		return {"min_w": min_w, "min_h": min_h}
-
 
 
 	def get_mean_and_std(self):
@@ -663,7 +663,9 @@ metric = {
 def train(model, epochs, learning_rates, optimizer, criterion, dataset, batch_size=512, num_workers=0, drop_last=False, timer=None):
 	
 	t = timer or Timer()
-	if balance: train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=False, pin_memory=True, num_workers=num_workers, drop_last=drop_last, sampler=balanced_sampler)
+
+	train_batches = get_dataloader["train"].
+	if balance: train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=False, pin_memory=True, num_workers=num_workers, drop_last=drop_last, sampler=dataset["train"].get_balanced_sampler())
 	else:       train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=True,  pin_memory=True, num_workers=num_workers, drop_last=drop_last)
 	test_batches              = torch.utils.data.DataLoader(dataset["val"],   batch_size, shuffle=False, pin_memory=True, num_workers=num_workers)
 	train_size, val_size = len(dataset["train"]), len(dataset["val"])
