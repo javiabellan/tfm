@@ -4,7 +4,8 @@ from torchvision import transforms
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_auc_score
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 from fastprogress import master_bar, progress_bar
 import pathlib
@@ -34,7 +35,7 @@ class ImageDataset(torch.utils.data.Dataset):
 		self.labels     = labels
 		self.labels_map = labels_map
 		self.transforms = transforms
-		self.limit      = limit  
+		self.limit      = limit
 
 	def __len__(self):
 		return len(self.labels) if not self.limit else self.limit
@@ -45,7 +46,6 @@ class ImageDataset(torch.utils.data.Dataset):
 		if self.transforms: image = self.transforms(image)
 		label = self.labels[idx]
 		return image, label
-
 
 	def get_balanced_sampler(self):
 		class_counts  = np.bincount(self.labels)
@@ -81,7 +81,15 @@ class ImageDataset(torch.utils.data.Dataset):
 			plt.imshow(img)
 		plt.show()
 
-	def get_subsets(self, percentage=0.7):
+	def split(self, val_size=0.3):
+		x_train, x_valid, y_train, y_valid = train_test_split(self.images, self.labels, test_size=val_size, stratify=self.labels)
+
+		train_ds = ImageDataset(image_dir=self.image_dir, images=x_train, labels=y_train, labels_map=self.labels_map, transforms=self.transforms, limit=self.limit)
+		valid_ds = ImageDataset(image_dir=self.image_dir, images=x_valid, labels=y_valid, labels_map=self.labels_map, transforms=self.transforms, limit=self.limit)
+
+		return train_ds, valid_ds
+
+	def split2(self, percentage=0.7):
 		length = self.__len__()
 		train_length = int(percentage * length)
 		valid_length = length - train_length
@@ -143,27 +151,56 @@ class ImageDataset(torch.utils.data.Dataset):
 
 
 
+################    _                               
+################   | |                              
+################   | |     __ _ _   _  ___ _ __ ___ 
+################   | |    / _` | | | |/ _ \ '__/ __|
+################   | |___| (_| | |_| |  __/ |  \__ \
+################   |______\__,_|\__, |\___|_|  |___/
+################                 __/ |              
+################                |___/               
 
+class Flat1D(torch.nn.Module):
+	def forward(self, x):
+		return x.view(-1)
+
+class Flat2D(torch.nn.Module):
+	def forward(self, x):
+		return x.view(x.size(0), -1)
+
+class Concat(torch.nn.Module):
+	def forward(self, *xs):
+		return torch.cat(xs, 1)
+
+class AdaptiveConcatPool2d(torch.nn.Module):
+	def __init__(self, sz=None):
+		super().__init__()
+		sz = sz or (1,1)
+		self.ap = torch.nn.AdaptiveAvgPool2d(sz)
+		self.mp = torch.nn.AdaptiveMaxPool2d(sz)
+	def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
 
 
 
 
 class DeepLearner():
 
-	def __init__(self, dataset, model_name, pretrained=True, half_prec=True):
+	def __init__(self, model_name, train_ds, valid_ds, test_ds=None, batch_size=64, pretrained=True, half_prec=True, balance=False):
 
 		self.device     = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-		self.dataset    = dataset
+		self.train_ds   = train_ds
+		self.valid_ds   = valid_ds
+		self.test_ds    = test_ds
+		self.batch_size = batch_size
 		self.pretrained = pretrained
 		self.half_prec  = half_prec
 		self.get_model(model_name)
-		self.criterion  = torch.nn.CrossEntropyLoss()
 		self.lr         = 0.01
 		self.mom        = 0.9
 		self.wd         = 1e-4
 		self.nesterov   = False
 		self.optimizer  = self.get_optimizer()
-		self.metrics    = {
+		self.log        = {
 			"epoch": [],
 			"learning rate": [],
 			"total time": [],
@@ -174,12 +211,19 @@ class DeepLearner():
 		}		
 		
 		# TODO
-		self.dataset["train"].transforms = transforms.Compose([transforms.CenterCrop(128), transforms.ToTensor()])
-		self.dataset["valid"].transforms = transforms.Compose([transforms.CenterCrop(128), transforms.ToTensor()])
-		self.batch_size = 8
-		balanced_sampler = dataset["train"].get_balanced_sampler()
-		self.train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size=self.batch_size, sampler=balanced_sampler)
-		self.valid_batches = torch.utils.data.DataLoader(dataset["train"], batch_size=self.batch_size, sampler=balanced_sampler)
+		num_workers= 0
+		pin_memory = True
+		drop_last  = False
+		if balance:
+			shuffle = False
+			sampler = dataset["train"].get_balanced_sampler()
+		else:
+			shuffle = True
+			sampler = None
+		self.train_batches = torch.utils.data.DataLoader(self.train_ds, batch_size=self.batch_size, shuffle=shuffle, sampler=sampler)
+		self.valid_batches = torch.utils.data.DataLoader(self.valid_ds, batch_size=self.batch_size)
+		if test_ds:
+			self.test_batches = torch.utils.data.DataLoader(self.test_ds, batch_size=self.batch_size)
 		"""
 		scale       = 360
 		input_size  = 540 #224
@@ -226,16 +270,43 @@ class DeepLearner():
 		except AttributeError:
 			print(model_name+" model don't exists in torchvision.")
 
-		if self.pretrained: self.freeze()
+		# if self.pretrained: self.freeze()
 
 		# Edit last 2 layers
-		num_classes = len(np.bincount(self.dataset["train"].labels))
+		num_classes = len(np.bincount(self.train_ds.labels))
+		assert num_classes >= 2
 		self.model.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))                      # for variable image sizes
 		self.model.fc      = torch.nn.Linear(self.model.fc.in_features, num_classes) # new layer unfreezed by default
+
+		# Define the loss function
+		if num_classes > 2:
+			self.criterion = torch.nn.CrossEntropyLoss()   # Softmax + Cross entropy
+		else: # Binary classification
+			self.criterion = torch.nn.BCEWithLogitsLoss()  # Sigmoid + Binary cross entropy
+			self.model.fc  = torch.nn.Sequential(torch.nn.Linear(self.model.fc.in_features, 1), Flat1D())
+
+		# Define metric
+		if num_classes > 2:
+			self.metric = self.accuracy
+		else: # Binary classification
+			self.metric = self.binary_metric
 
 		# Send the model to GPU
 		self.model = self.model.to(self.device)
 		if self.half_prec: self.model = self.model.half()
+
+
+
+
+	def accuracy(self, output, target):
+		preds    = torch.argmax(output, dim=1)
+		return torch.sum(preds == target.data).item()
+
+	def binary_metric(self, output, target):
+		a = target.data.cpu().numpy()
+		b = output.detach().cpu().numpy()
+		return roc_auc_score(a, b)
+
 
 
 	# Finetune the last layer
@@ -265,6 +336,27 @@ class DeepLearner():
 		                                   pin_memory  = pin_memory,
 		                                   drop_last   = drop_last)
 
+
+	################################### SAVE/LOAD
+
+	def save_model(self, filename='model.pt'):
+		torch.save(self.model.state_dict(), filename)
+
+	def load_model(self, filename='model.pt'):
+		self.model.load_state_dict(torch.load(filename))
+
+	def load_model_2(self, filename='model.pt'):
+		sd = torch.load(filename, map_location=lambda storage, loc: storage)
+		names = set(self.model.state_dict().keys())
+		for n in list(sd.keys()): 
+			if n not in names and n+'_raw' in names:
+				if n+'_raw' not in sd: sd[n+'_raw'] = sd[n]
+				del sd[n]
+		self.model.load_state_dict(sd)
+
+
+
+
 	################    _______        _       
 	################   |__   __|      (_)      
 	################      | |_ __ __ _ _ _ __  
@@ -281,15 +373,17 @@ class DeepLearner():
 
 		
 	def forward(self, batch, stats):
-		inputs   = batch[0].to(self.device).half()
-		labels   = batch[1].to(self.device).long()
-		outputs  = self.model(inputs)
-		preds    = torch.argmax(outputs, dim=1)
-		corrects = torch.sum(preds == labels.data) # Metric 1
-		loss     = self.criterion(outputs, labels) # Metric 2
+		inputs  = batch[0].to(self.device)
+		labels  = batch[1].to(self.device)
+		if self.half_prec:
+			inputs, labels = inputs.half(), labels.half()
+
+		outputs = self.model(inputs)
+		metric  = self.metric(outputs, labels)
+		loss    = self.criterion(outputs, labels)
 
 		stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
-		stats["correct"].append(corrects.item())
+		stats["correct"].append(metric)
 
 		return loss
 
@@ -314,11 +408,29 @@ class DeepLearner():
 			loss = self.forward(batch, stats)
 		return stats
 
+	def test_epoch(self):
+		preds = []
+		self.model.train(False)
+		for batch in self.test_batches:
+			inputs  = batch[0].to(self.device)
+			labels  = batch[1].to(self.device)
+			if self.half_prec:
+				inputs, labels = inputs.half(), labels.half()
+			output = self.model(inputs)
+			pr = output.detach().cpu().numpy()
+			for i in pr:
+				preds.append(i)
+		return preds
+
 	def train(self, epochs, learning_rates):
 	
 		t = Timer()
 
-		train_size, val_size = len(self.dataset["train"]), len(self.dataset["valid"])
+		valid_loss_min = np.Inf
+		patience       = 10
+		p              = 0 # current number of epochs, where validation loss didn't increase
+
+		train_size, val_size = len(self.train_ds), len(self.valid_ds)
 		#if drop_last: train_size -= (train_size % self.batch_size)
 
 		num_epochs    = epochs[-1]
@@ -337,29 +449,53 @@ class DeepLearner():
 			train_stats, train_time = self.train_epoch(mb, lrs, {'loss': [], 'correct': []}), t()
 			valid_stats, valid_time = self.valid_epoch(mb,      {'loss': [], 'correct': []}), t()
 			
-			metric["epoch"].append(epoch+1)
-			metric["learning rate"].append(lr_schedule(epoch+1))
-			metric["total time"].append(t.total_time)
-			metric["train loss"].append(sum(train_stats['loss'])/train_size)
-			metric["train acc"].append(sum(train_stats['correct'])/train_size)
-			metric["val loss"].append(sum(valid_stats['loss'])/val_size)
-			metric["val acc"].append(sum(valid_stats['correct'])/val_size)
+			self.log["epoch"].append(epoch+1)
+			self.log["learning rate"].append(lr_schedule(epoch+1))
+			self.log["total time"].append(t.total_time)
+			self.log["train loss"].append(sum(train_stats['loss'])/train_size) # or np.mean
+			self.log["train acc"].append(sum(train_stats['correct'])/train_size)
+			self.log["val loss"].append(sum(valid_stats['loss'])/val_size)
+			self.log["val acc"].append(sum(valid_stats['correct'])/val_size)
+
+
+			if self.log["val loss"][-1] <= valid_loss_min:   # Val loss improve
+				self.save_model()
+				valid_loss_min = self.log["val loss"][-1]
+				p = 0
+			else:                                            # Val loss didn't improve
+				p += 1
+				if p > patience:
+					mb.write('Stopping training')
+					break
 
 			mb.write("{}/{}\t{:.0f}:{:.0f}\t{:.4f}\t\t{:.4f}\t{:.4f}\t\t{:.4f}\t{:.4f}".format(
-				metric["epoch"][-1],
+				self.log["epoch"][-1],
 				num_epochs,
-				metric["total time"][-1]//60,
-				metric["total time"][-1]%60,
-				metric["learning rate"][-1],
-				metric["train loss"][-1],
-				metric["train acc"][-1],
-				metric["val loss"][-1],
-				metric["val acc"][-1]
+				self.log["total time"][-1]//60,
+				self.log["total time"][-1]%60,
+				self.log["learning rate"][-1],
+				self.log["train loss"][-1],
+				self.log["train acc"][-1],
+				self.log["val loss"][-1],
+				self.log["val acc"][-1]
 			))
-			graphs = [[metric["epoch"], metric["train acc"]],
-			          [metric["epoch"], metric["val acc"]]]
+			graphs = [[self.log["epoch"], self.log["train acc"]],
+			          [self.log["epoch"], self.log["val acc"]]]
 			mb.update_graph(graphs)
 			
+
+	def test(self, filename):
+		preds = self.valid_epoch()
+
+
+
+
+
+
+
+
+
+
 class LinearInterpolation():
 	def __init__(self, xs, ys):
 		self.xs, self.ys = xs, ys
@@ -378,3 +514,9 @@ class Timer():
 		if include_in_total:
 			self.total_time += dt
 		return dt
+
+def plot_lr(epochs, lrs):
+	plt.title("Learning Rate")
+	plt.xlabel("Epochs")
+	plt.ylabel("Learning Rate")
+	plt.plot(epochs, lrs)
