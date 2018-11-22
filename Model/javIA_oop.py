@@ -370,22 +370,13 @@ class DeepLearner():
 
 	def update_mom(self, mom):
 		self.optimizer.param_groups[0]['momentum'] = mom
+	
 
-		
-	def forward(self, batch, stats):
+	def get_batch(self, batch):
 		inputs  = batch[0].to(self.device)
 		labels  = batch[1].to(self.device)
-		if self.half_prec:
-			inputs, labels = inputs.half(), labels.half()
-
-		outputs = self.model(inputs)
-		metric  = self.metric(outputs, labels)
-		loss    = self.criterion(outputs, labels)
-
-		stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
-		stats["correct"].append(metric)
-
-		return loss
+		if self.half_prec: inputs, labels = inputs.half(), labels.half()
+		return inputs, labels
 
 	def backward(self, lr, loss):
 		assert self.model.training
@@ -395,32 +386,45 @@ class DeepLearner():
 		self.optimizer.step()
 		self.model.zero_grad()
 
-	def train_epoch(self, mb, lrs, stats):
+	def train_epoch(self, mb, lrs):
+		stats = {'loss': [], 'correct': []}
 		self.model.train(True)
 		for lr, batch in zip(lrs, progress_bar(self.train_batches, parent=mb)):
-			loss = self.forward(batch, stats)
+			input, target = self.get_batch(batch)
+			output        = self.model(input)
+			metric        = self.metric(output, target)
+			loss          = self.criterion(output, target)
+			stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
+			stats["correct"].append(metric)
 			self.backward(lr, loss)
 		return stats
 
-	def valid_epoch(self, mb, stats):
+	def valid_epoch(self, mb):
+		stats = {'loss': [], 'correct': []}
 		self.model.train(False)
-		for batch in progress_bar(self.valid_batches, parent=mb):
-			loss = self.forward(batch, stats)
+		with torch.no_grad():
+			for batch in progress_bar(self.valid_batches, parent=mb):
+				#loss = self.forward(batch, stats)
+				input, target = self.get_batch(batch)
+				output        = self.model(input)
+				metric        = self.metric(output, target)
+				loss          = self.criterion(output, target)
+				stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
+				stats["correct"].append(metric)
 		return stats
 
 	def test_epoch(self):
 		preds = []
 		self.model.train(False)
-		for batch in self.test_batches:
-			inputs  = batch[0].to(self.device)
-			labels  = batch[1].to(self.device)
-			if self.half_prec:
-				inputs, labels = inputs.half(), labels.half()
-			output = self.model(inputs)
-			pr = output.detach().cpu().numpy()
-			for i in pr:
-				preds.append(i)
+		with torch.no_grad():
+			for batch in tqdm(self.test_batches):
+				input, target = self.get_batch(batch)
+				output        = self.model(input).cpu().numpy()
+				preds         = np.concatenate((preds, output))
+
+		torch.cuda.empty_cache() # free cache mem after test
 		return preds
+
 
 	def train(self, epochs, learning_rates):
 	
@@ -446,8 +450,8 @@ class DeepLearner():
 
 			#self.train_batches.dataset.set_random_choices() 
 			lrs = (lr_schedule(x)/self.batch_size for x in np.arange(epoch, epoch+1, 1/len(self.train_batches)))
-			train_stats, train_time = self.train_epoch(mb, lrs, {'loss': [], 'correct': []}), t()
-			valid_stats, valid_time = self.valid_epoch(mb,      {'loss': [], 'correct': []}), t()
+			train_stats, train_time = self.train_epoch(mb, lrs), t()
+			valid_stats, valid_time = self.valid_epoch(mb,    ), t()
 			
 			self.log["epoch"].append(epoch+1)
 			self.log["learning rate"].append(lr_schedule(epoch+1))
@@ -459,6 +463,7 @@ class DeepLearner():
 
 
 			if self.log["val loss"][-1] <= valid_loss_min:   # Val loss improve
+				mb.write('Saving model!')
 				self.save_model()
 				valid_loss_min = self.log["val loss"][-1]
 				p = 0
@@ -482,6 +487,8 @@ class DeepLearner():
 			graphs = [[self.log["epoch"], self.log["train acc"]],
 			          [self.log["epoch"], self.log["val acc"]]]
 			mb.update_graph(graphs)
+
+			torch.cuda.empty_cache() # free cache mem after train 
 			
 
 	def test(self, filename):
@@ -520,3 +527,28 @@ def plot_lr(epochs, lrs):
 	plt.xlabel("Epochs")
 	plt.ylabel("Learning Rate")
 	plt.plot(epochs, lrs)
+
+
+
+def gpu_info():
+	print("cuda available:  ", torch.cuda.is_available())
+	print("Id of GPU:       ", torch.cuda.current_device())
+	print("Name of GPU:     ", torch.cuda.get_device_name(0))
+	print("Total mem of GPU:", torch.cuda.get_device_properties(0).total_memory/1e9, "GB")
+	print("Tensor used mem: ", torch.cuda.memory_allocated())
+	print("Tensor max mem:  ", torch.cuda.max_memory_allocated())
+	print("Cache used mem:  ", torch.cuda.memory_cached())
+	print("Cache max mem:   ", torch.cuda.max_memory_cached())
+
+def plt_mem():
+	tensor_mem = torch.cuda.memory_allocated()
+	cache_mem  = torch.cuda.memory_cached()
+	free_mem   = torch.cuda.get_device_properties(0).total_memory - tensor_mem - cache_mem
+	mem_values = [tensor_mem, cache_mem, free_mem]
+	mem_lables = ["tensor", "cache", "free"]
+	plt.title("GPU mem")
+	plt.pie(mem_values, labels=mem_lables, autopct='%1.1f%%');
+
+def free():
+    torch.cuda.empty_cache()
+    plt_mem()
