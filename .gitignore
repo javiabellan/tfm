@@ -1,1 +1,6 @@
+# Models
 *.tar
+*.pt
+
+# Submissiones
+*.csv
