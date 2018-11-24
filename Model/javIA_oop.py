@@ -197,7 +197,7 @@ class DeepLearner():
 		self.get_model(model_name)
 		self.lr         = 0.01
 		self.mom        = 0.9
-		self.wd         = 1e-4
+		self.wd         = 5e-4 #1e-4
 		self.nesterov   = False
 		self.optimizer  = self.get_optimizer()
 		self.log        = {
@@ -386,21 +386,31 @@ class DeepLearner():
 		self.optimizer.step()
 		self.model.zero_grad()
 
-	def train_epoch(self, mb, lrs):
-		stats = {'loss': [], 'correct': []}
+	def train_epoch(self, stats, epoch, mb, lrs):
+		it = epoch*len(self.train_batches)
 		self.model.train(True)
 		for lr, batch in zip(lrs, progress_bar(self.train_batches, parent=mb)):
 			input, target = self.get_batch(batch)
 			output        = self.model(input)
 			metric        = self.metric(output, target)
 			loss          = self.criterion(output, target)
-			stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
-			stats["correct"].append(metric)
+
+			it += 1
+			stats["train_it"].append(it)
+			stats["train_loss"].append(loss.item()) # loss.item() * inputs.size(0)
+			stats["train_metric"].append(metric)
+
+			graphs = [	[stats["train_it"], stats["train_loss"]],
+						[stats["train_it"], stats["train_metric"]],
+						[stats["valid_it"], stats["valid_loss"]],
+						[stats["valid_it"], stats["valid_metric"]]]
+			mb.update_graph(graphs)
+
 			self.backward(lr, loss)
 		return stats
 
-	def valid_epoch(self, mb):
-		stats = {'loss': [], 'correct': []}
+	def valid_epoch(self, stats, epoch, mb):
+		it = epoch*len(self.valid_batches)
 		self.model.train(False)
 		with torch.no_grad():
 			for batch in progress_bar(self.valid_batches, parent=mb):
@@ -409,8 +419,18 @@ class DeepLearner():
 				output        = self.model(input)
 				metric        = self.metric(output, target)
 				loss          = self.criterion(output, target)
-				stats["loss"].append(loss.item()) # loss.item() * inputs.size(0)
-				stats["correct"].append(metric)
+
+				it += 1
+				stats["valid_it"].append(it)
+				stats["valid_loss"].append(loss.item()) # loss.item() * inputs.size(0)
+				stats["valid_metric"].append(metric)
+
+				graphs = [	[stats["train_it"], stats["train_loss"]],
+							[stats["train_it"], stats["train_metric"]],
+							[stats["valid_it"], stats["valid_loss"]],
+							[stats["valid_it"], stats["valid_metric"]]]
+				mb.update_graph(graphs)
+
 		return stats
 
 	def test_epoch(self):
@@ -426,22 +446,26 @@ class DeepLearner():
 		return preds
 
 
-	def train(self, epochs, learning_rates):
+	def train(self, num_epochs, max_lr=0.1):
 	
 		t = Timer()
 
 		valid_loss_min = np.Inf
 		patience       = 10
 		p              = 0 # current number of epochs, where validation loss didn't increase
-
-		train_size, val_size = len(self.train_ds), len(self.valid_ds)
+		#train_size, val_size = len(self.train_ds), len(self.valid_ds)
 		#if drop_last: train_size -= (train_size % self.batch_size)
 
-		num_epochs    = epochs[-1]
-		lr_schedule   = LinearInterpolation(epochs, learning_rates)
+		self.epochs         = [0, num_epochs/4, num_epochs] #[0, 15, 30, 35]
+		self.learning_rates = [0, max_lr, 0]                #[0, 0.1, 0.005, 0]
+		lr_schedule    = LinearInterpolation(self.epochs, self.learning_rates)
 		#mo_schedule   = LinearInterpolation(epochs, momentum)
 
+		stats = {"train_it": [], 'train_loss': [], 'train_metric': [],
+				"valid_it": [], 'valid_loss': [], 'valid_metric': []}
+
 		mb = master_bar(range(num_epochs))
+		mb.names = ["train loss", "train acc", "val loss", "val acc"]
 		mb.write("Epoch\tTime\tLearRate\tT_loss\tT_accu\t\tV_loss\tV_accu")
 		mb.write("-"*70)
 		for epoch in mb:
@@ -450,16 +474,16 @@ class DeepLearner():
 
 			#self.train_batches.dataset.set_random_choices() 
 			lrs = (lr_schedule(x)/self.batch_size for x in np.arange(epoch, epoch+1, 1/len(self.train_batches)))
-			train_stats, train_time = self.train_epoch(mb, lrs), t()
-			valid_stats, valid_time = self.valid_epoch(mb,    ), t()
+			stats, train_time = self.train_epoch(stats, epoch, mb, lrs), t()
+			stats, valid_time = self.valid_epoch(stats, epoch, mb,    ), t()
 			
 			self.log["epoch"].append(epoch+1)
 			self.log["learning rate"].append(lr_schedule(epoch+1))
 			self.log["total time"].append(t.total_time)
-			self.log["train loss"].append(sum(train_stats['loss'])/train_size) # or np.mean
-			self.log["train acc"].append(sum(train_stats['correct'])/train_size)
-			self.log["val loss"].append(sum(valid_stats['loss'])/val_size)
-			self.log["val acc"].append(sum(valid_stats['correct'])/val_size)
+			self.log["train loss"].append(np.mean(stats['train_loss'])) # or np.mean
+			self.log["train acc"].append(np.mean(stats['train_metric']))
+			self.log["val loss"].append(np.mean(stats['valid_loss']))
+			self.log["val acc"].append(np.mean(stats['valid_metric']))
 
 
 			if self.log["val loss"][-1] <= valid_loss_min:   # Val loss improve
@@ -484,15 +508,22 @@ class DeepLearner():
 				self.log["val loss"][-1],
 				self.log["val acc"][-1]
 			))
-			graphs = [[self.log["epoch"], self.log["train acc"]],
-			          [self.log["epoch"], self.log["val acc"]]]
-			mb.update_graph(graphs)
+
+			#graphs = [[self.log["epoch"], self.log["train acc"]],
+			#          [self.log["epoch"], self.log["val acc"]]]
+			#mb.update_graph(graphs)
 
 			torch.cuda.empty_cache() # free cache mem after train 
 			
 
 	def test(self, filename):
 		preds = self.valid_epoch()
+
+
+	def plot_lr(self):
+		plt.xlabel("Epochs")
+		plt.ylabel("Learning Rate")
+		plt.plot(self.epochs, self.learning_rates)
 
 
 
@@ -522,11 +553,7 @@ class Timer():
 			self.total_time += dt
 		return dt
 
-def plot_lr(epochs, lrs):
-	plt.title("Learning Rate")
-	plt.xlabel("Epochs")
-	plt.ylabel("Learning Rate")
-	plt.plot(epochs, lrs)
+
 
 
 
