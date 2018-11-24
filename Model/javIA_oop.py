@@ -41,6 +41,7 @@ class ImageDataset(torch.utils.data.Dataset):
 		return len(self.labels) if not self.limit else self.limit
 
 	def __getitem__(self, idx):
+		if type(idx)==torch.Tensor: idx = idx.item() # TODO: bug of WeightedRandomSampler?
 		img_name = self.image_dir / self.images[idx]
 		image = PIL.Image.open(img_name)
 		if self.transforms: image = self.transforms(image)
@@ -58,6 +59,7 @@ class ImageDataset(torch.utils.data.Dataset):
 			sample_weights.append(class_weights[label])
 
 		sample_weights = np.array(sample_weights, dtype='float')
+		# WeightedRandomSampler: The size of the epoch is the same, but now are balanced (undersampling and oversampling)
 		sampler = torch.utils.data.WeightedRandomSampler(sample_weights, len(sample_weights))
 		return sampler
 
@@ -151,6 +153,8 @@ class ImageDataset(torch.utils.data.Dataset):
 
 
 
+
+
 ################    _                               
 ################   | |                              
 ################   | |     __ _ _   _  ___ _ __ ___ 
@@ -179,6 +183,13 @@ class AdaptiveConcatPool2d(torch.nn.Module):
 		self.ap = torch.nn.AdaptiveAvgPool2d(sz)
 		self.mp = torch.nn.AdaptiveMaxPool2d(sz)
 	def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
+
+
+
+
+
+
+
 
 
 
@@ -275,8 +286,8 @@ class DeepLearner():
 		# Edit last 2 layers
 		num_classes = len(np.bincount(self.train_ds.labels))
 		assert num_classes >= 2
-		self.model.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))                      # for variable image sizes
-		self.model.fc      = torch.nn.Linear(self.model.fc.in_features, num_classes) # new layer unfreezed by default
+		self.model.avgpool = AdaptiveConcatPool2d()  # Adaptative->variable image sizes.  Concat-> Avg + Max
+		self.model.fc      = torch.nn.Linear(self.model.fc.in_features*2, num_classes) # new layer unfreezed by default
 
 		# Define the loss function
 		if num_classes > 2:
@@ -526,6 +537,87 @@ class DeepLearner():
 		plt.plot(self.epochs, self.learning_rates)
 
 
+	################    _      _____    ______ _           _           
+	################   | |    |  __ \  |  ____(_)         | |          
+	################   | |    | |__) | | |__   _ _ __   __| | ___ _ __ 
+	################   | |    |  _  /  |  __| | | '_ \ / _` |/ _ \ '__|
+	################   | |____| | \ \  | |    | | | | | (_| |  __/ |   
+	################   |______|_|  \_\ |_|    |_|_| |_|\__,_|\___|_|   
+	################                                                   
+	                                                 
+	"""
+	The learning rate finder looks for the optimal learning rate to start the training.
+	The technique is quite simple. For one epoch:
+
+	- Start with a very small learning rate (around 1e-8) and increase the learning rate linearly.
+	- Plot the loss at each step of LR.
+	- Stop the learning rate finder when loss stops going down and starts increasing.
+
+	A graph is created with the x axis having learning rates and the y axis having the losses.
+
+	https://medium.com/coinmonks/training-neural-networks-upto-10x-faster-3246d84caacd
+	https://github.com/nachiket273/One_Cycle_Policy/blob/master/CLR.ipynb
+	"""
+
+	def findLR(self, init_value=1e-5, final_value=100):
+
+		model_weights = self.model.state_dict()  # save current model
+		self.model.train()                       # setup model for training configuration
+
+		num = len(self.train_batches) - 1 # total number of batches
+		mult = (final_value / init_value) ** (1/num)
+
+		losses = []
+		lrs = []
+		best_loss = 0.
+		avg_loss = 0.
+		beta = 0.98 # the value for smooth losses
+		lr = init_value
+
+		for batch_num, (inputs, targets) in enumerate(tqdm(self.train_batches, total=len(self.train_batches))):
+
+			self.update_lr(lr)
+
+			batch_num += 1 # for non zero value
+			inputs, targets = inputs.to(self.device), targets.to(self.device) # convert to cuda for GPU usage
+
+			self.optimizer.zero_grad() # clear gradients
+			outputs = self.model(inputs) # forward pass
+			loss = self.criterion(outputs, targets) # compute loss
+
+			# Compute the smoothed loss to create a clean graph
+			avg_loss = beta * avg_loss + (1-beta) *loss.item()
+			smoothed_loss = avg_loss / (1 - beta**batch_num)
+
+			# Record the best loss
+			if smoothed_loss < best_loss or batch_num==1:
+				best_loss = smoothed_loss
+
+			# Append loss and learning rates for plotting
+			lrs.append(lr) #lrs.append(math.log10(lr)) # Plot modification
+			losses.append(smoothed_loss)
+
+			# Stop if the loss is exploding
+			if batch_num > 1 and smoothed_loss > 4 * best_loss:
+				break
+
+			# Backprop for next step
+			loss.backward()
+			self.optimizer.step()
+
+			# update learning rate
+			lr = mult*lr
+
+		self.model.load_state_dict(model_weights) # restore original model
+
+		plt.xlabel('Learning Rates')
+		plt.ylabel('Losses')
+		plt.semilogx(lrs[10:-5], losses[10:-5]) #plt.plot(lrs, losses) # Plot modification
+		plt.show()
+
+
+
+
 
 
 
@@ -567,7 +659,7 @@ def gpu_info():
 	print("Cache used mem:  ", torch.cuda.memory_cached())
 	print("Cache max mem:   ", torch.cuda.max_memory_cached())
 
-def plt_mem():
+def mem():
 	tensor_mem = torch.cuda.memory_allocated()
 	cache_mem  = torch.cuda.memory_cached()
 	free_mem   = torch.cuda.get_device_properties(0).total_memory - tensor_mem - cache_mem
@@ -578,4 +670,107 @@ def plt_mem():
 
 def free():
     torch.cuda.empty_cache()
-    plt_mem()
+    mem()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################################################## DEPRECATED
+
+
+
+################                                             _        _   _             
+################       /\                                   | |      | | (_)            
+################      /  \  _   _  __ _ _ __ ___   ___ _ __ | |_ __ _| |_ _  ___  _ __  
+################     / /\ \| | | |/ _` | '_ ` _ \ / _ \ '_ \| __/ _` | __| |/ _ \| '_ \ 
+################    / ____ \ |_| | (_| | | | | | |  __/ | | | || (_| | |_| | (_) | | | |
+################   /_/    \_\__,_|\__, |_| |_| |_|\___|_| |_|\__\__,_|\__|_|\___/|_| |_|
+################                   __/ |                                                
+################                  |___/                                                 
+################
+################  Augmentations provided by albumentations
+################  https://github.com/albu/albumentations/blob/master/albumentations/augmentations/transforms.py
+
+"""
+
+########## Por clasificar
+
+'PadIfNeeded',        # Pad side of the image / max if side is less than desired number.
+'Cutout',             # CoarseDropout of the square regions in the image.
+'ToFloat',            # Divide pixel values by max_value to get a float32 output array where all values lie in the range [0, 1.0]. If max_value is None the transform will try to infer the maximum value by inspecting the data type of the input image.
+'FromFloat',          # Take an input array where all values should lie in the range [0, 1.0], multiply them by max_value and then cast the resulted value to a type specified by dtype. If max_value is None the transform will try to infer the maximum value for the data type from the dtype argument.
+'LongestMaxSize',     # Rescale an image so that maximum side is equal to max_size, keeping the aspect ratio of the initial image.
+'SmallestMaxSize',    # Rescale an image so that minimum side is equal to max_size, keeping the aspect ratio of the initial image.
+
+########## Filter augmentations
+
+'Normalize',          # Divide pixel values by 255 = 2**8 - 1, subtract mean per channel and divide by std per channel.
+'RGBShift',           # Randomly shift values for each channel of the input RGB image.
+'InvertImg',          # Invert the input image by subtracting pixel values from 255.
+'HueSaturationValue', # Randomly change hue, saturation and value of the input image.
+'ChannelShuffle',     # Randomly rearrange channels of the input RGB image.
+'CLAHE',              # Apply Contrast Limited Adaptive Histogram Equalization to the input image.
+'RandomContrast',
+'RandomGamma',
+'RandomBrightness',
+'Blur',               # Blur the input image using a random-sized kernel.
+'MedianBlur',         # Blur the input image using using a median filter with a random aperture linear size.
+'MotionBlur',         # Apply motion blur to the input image using a random-sized kernel.
+'GaussNoise',         # Apply gaussian noise to the input image.
+'ToGray',             # Convert the input RGB image to grayscale. If the mean pixel value for the resulting image is greater than 127, invert the resulting grayscale image.
+'JpegCompression',    # Decrease Jpeg compression of an image.
+
+########## Non destructive augmentations (Dehidral group D4)
+
+'VerticalFlip',      # Flip the input vertically around the x-axis.
+'HorizontalFlip',    # Flip the input horizontally around the y-axis.
+'Flip',              # Flip the input either horizontally, vertically or both horizontally and vertically.
+'RandomRotate90',    # Randomly rotate the input by 90 degrees zero or more times.
+'Transpose',         # Transpose the input by swapping rows and columns.
+
+########## Move augmentations (View position zoom rotation)
+
+'ShiftScaleRotate',  # Randomly apply affine transforms: translate, scale and rotate the input.
+'RandomSizedCrop'    # Crop a random part of the input and rescale it to some size.
+'RandomCrop',        # Crop a random part of the input.
+'Rotate',            # Rotate the input by an angle selected randomly from the uniform distribution.
+'CenterCrop',        # Crop the central part of the input.
+'Crop',              # Crop region from image.
+'RandomScale',       # Randomly resize the input. Output image size is different from the input image size.
+'Resize',            # Resize the input to the given height and width.
+
+########## Non-rigid transformations augmentations
+
+'GridDistortion',
+'ElasticTransform',
+'OpticalDistortion',
+
+"""
