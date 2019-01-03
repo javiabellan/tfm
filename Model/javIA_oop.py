@@ -227,7 +227,7 @@ class DeepLearner():
 		drop_last  = False
 		if balance:
 			shuffle = False
-			sampler = dataset["train"].get_balanced_sampler()
+			sampler = train_ds.get_balanced_sampler()
 		else:
 			shuffle = True
 			sampler = None
@@ -559,22 +559,25 @@ class DeepLearner():
 	https://github.com/nachiket273/One_Cycle_Policy/blob/master/CLR.ipynb
 	"""
 
-	def findLR(self, init_value=1e-5, final_value=100):
+	def findLR(self, start_lr=1e-6, end_lr=10, num_it=100):
 
-		model_weights = self.model.state_dict()  # save current model
+		model_weights = copy.deepcopy(self.model.state_dict())  # save current model
 		self.model.train()                       # setup model for training configuration
 
 		num = len(self.train_batches) - 1 # total number of batches
-		mult = (final_value / init_value) ** (1/num)
+		mult = (end_lr / start_lr) ** (1/num)
 
 		losses = []
 		lrs = []
 		best_loss = 0.
 		avg_loss = 0.
 		beta = 0.98 # the value for smooth losses
-		lr = init_value
+		lr = start_lr
 
-		for batch_num, (inputs, targets) in enumerate(tqdm(self.train_batches, total=len(self.train_batches))):
+		#for batch_num, (inputs, targets) in enumerate(tqdm(self.train_batches, total=len(self.train_batches))):
+		for batch_num in tqdm(range(num_it)):
+
+			inputs, targets = next(iter(self.train_batches))
 
 			self.update_lr(lr)
 
@@ -609,10 +612,12 @@ class DeepLearner():
 			lr = mult*lr
 
 		self.model.load_state_dict(model_weights) # restore original model
+		torch.cuda.empty_cache()                  # free cache mem when finish
 
 		plt.xlabel('Learning Rates')
 		plt.ylabel('Losses')
-		plt.semilogx(lrs[10:-5], losses[10:-5]) #plt.plot(lrs, losses) # Plot modification
+		#plt.semilogx(lrs[10:-5], losses[10:-5]) #plt.plot(lrs, losses) # Plot modification
+		plt.semilogx(lrs[:-5], losses[:-5]) #plt.plot(lrs, losses) # Plot modification
 		plt.show()
 
 

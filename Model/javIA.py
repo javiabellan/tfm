@@ -664,7 +664,7 @@ def train(model, epochs, learning_rates, optimizer, criterion, dataset, batch_si
 	
 	t = timer or Timer()
 
-	train_batches = get_dataloader["train"].
+	train_batches = get_dataloader["train"]
 	if balance: train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=False, pin_memory=True, num_workers=num_workers, drop_last=drop_last, sampler=dataset["train"].get_balanced_sampler())
 	else:       train_batches = torch.utils.data.DataLoader(dataset["train"], batch_size, shuffle=True,  pin_memory=True, num_workers=num_workers, drop_last=drop_last)
 	test_batches              = torch.utils.data.DataLoader(dataset["val"],   batch_size, shuffle=False, pin_memory=True, num_workers=num_workers)
