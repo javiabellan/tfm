@@ -19,13 +19,39 @@ TFM based on this [paper](https://www.hindawi.com/journals/cin/2018/2061516/)
 > - Each dataset was divided into a training set, a validation set, and a test set with the ratio 7:1:2
 > - All the alorithims were evaluated using 10-fold cross validation.
 
+
+
 ## Traditional Feature Extraction
 
-- Implemented in MatConvn (matlab toolbox)
+Implemented in MatConvn (matlab toolbox)
+
+- **Texture features**
+- **Color moment features**
 - **Shape features** (not used)
 - **Color histogram features** (not used)
-- **Color moment features**: Is based on a single pixel. It is not very sensitive to the angle or size of the image
-- **Texture features**: Is a statistical distribution feature that can describe the innate properties of an image surface. It is based on multiple pixel area computing instead of single pixels.
+
+#### Texture features
+
+Is a statistical distribution feature that can describe the innate properties of an image surface. It is based on multiple pixel area computing instead of single pixels.
+
+To compute the image texture features:
+
+1. First acquire the gray-level co-occurrence matrix G 
+2. Then, we employ:
+   - The angular second moment (ASM)
+   - Entropy (ENT)
+   - Contrast (CON)
+   - Correlation (COR)
+3. After calculating ASM, ENT, CON, and COR, we continue to determine the mean and standard deviation of each of the others, which results in a texture feature vector.
+
+#### Color moment features
+
+Is based on a single pixel. It is not very sensitive to the angle or size of the image.
+
+Color moment features are always represented by the mean, standard deviation, and the third-order color moment.
+- The mean will display the lightness or darkness of the image.
+- The standard deviation can reflect the range of the image color distribution.
+- The third-order color moment shows the symmetry of the image color distribution
 
 
 ## Models
