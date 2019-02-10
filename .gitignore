@@ -4,3 +4,6 @@
 
 # Submissiones
 *.csv
+
+# Numpy arrays
+*.npy
