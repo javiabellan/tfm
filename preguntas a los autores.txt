@@ -1,0 +1,16 @@
+The ISIC-2017 dataset has 2000 images, but it also have and extra validation dataset (~150 images) and a test dataset (~600 images). Did you use those extra datasets for trainig or testing? Source:
+https://challenge.kitware.com/#challenge/n/ISIC_2017%3A_Skin_Lesion_Analysis_Towards_Melanoma_Detection
+
+Cross-validation:
+Did you Stratified classes in cross-validation? Or even for a better comparison would you share your 10-CV split indexes/
+
+The models AUC plot in the paper, are solving the binary melanoma prblem or the binary seborrheic problem?
+
+Did you use the metadata (age and sex) for the ISIC-2017 dataset?
+
+How did you deal with imbalance on the ISIC-2017 dataset? Weighted crossentropy? Oversample minority class images?
+
+Parameters to train coding network: Max learning rate? Batch size?
+
+
+
