@@ -1,31 +1,31 @@
-# Estructura TFM
+# TFM
 
-sobre 40 o 50 págs
+- Réplica y mejora del [paper](https://www.hindawi.com/journals/cin/2018/2061516/)
+- Sobre 40 o 50 págs
 
-
-# 1. Introduction & Motivation
+## 1. Introduction & Motivation
 - Alguna cita
 - Sobre 5 págs
 
-# 2. Background & related work
+## 2. Background & related work
 - CNN & DL & Vision (low level)
 - Medical images
 - State of the work (sobre el articulo a replicar)
 - Aquí van casi todas las citas bibliográficas
 - Sobre 10 o 15 págs
 
-# 3. Replication
+## 3. Replication
 - Checking their approach (validation)
 - Sobre 15 págs
 
-# 4. New vision
+## 4. New vision
 - Mi mejora: Son realmente necesarias las características tradicionales?
 - Sobre 15 o 20 págs
 
-# 5. Conclussions & Future work
+## 5. Conclusions & Future work
 - Sobre 2 o 3 págs
 
-# References
+## References
 - Entre 20 y 35 referencias (como unas 4 páginas)
 
 
